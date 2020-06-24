@@ -52,6 +52,8 @@ enum SpecialTrap {
 	Termination,
 	/// Signals that a trap was generated because of a successful restoration.
 	Restoration,
+	/// Signals that a buffer supplied by the caller is too small to fit the output.
+	OutputBufferTooSmall,
 }
 
 /// Can only be used for one call.
@@ -110,6 +112,12 @@ pub(crate) fn to_execution_result<E: Ext>(
 		Some(SpecialTrap::OutOfGas) => {
 			return Err(ExecError {
 				reason: "ran out of gas during contract execution".into(),
+				buffer: runtime.scratch_buf,
+			})
+		},
+		Some(SpecialTrap::OutputBufferTooSmall) => {
+			return Err(ExecError {
+				reason: "output buffer too small".into(),
 				buffer: runtime.scratch_buf,
 			})
 		},
@@ -343,6 +351,38 @@ fn write_sandbox_memory<T: Trait>(
 
 	Ok(())
 }
+
+fn write_sandbox_output<E: Ext>(
+	ctx: &mut Runtime<E>,
+	out_ptr: u32,
+	out_len_ptr: u32,
+	buf: &[u8],
+) -> Result<(), sp_sandbox::HostError> {
+	if out_len_ptr == 0 {
+		return Ok(());
+	}
+
+	let buf_len = buf.len() as u32;
+	let len: u32 = read_sandbox_memory_as(ctx, out_len_ptr, 4)?;
+
+	if len < buf_len {
+		ctx.special_trap = Some(SpecialTrap::OutputBufferTooSmall);
+		return Err(sp_sandbox::HostError);
+	}
+
+	charge_gas(
+		ctx.gas_meter,
+		ctx.schedule,
+		&mut ctx.special_trap,
+		RuntimeToken::WriteMemory(buf_len),
+	)?;
+
+	ctx.memory.set(out_ptr, buf)?;
+	ctx.memory.set(out_len_ptr, &buf_len.encode())?;
+
+	Ok(())
+}
+
 
 // ***********************************************************
 // * AFTER MAKING A CHANGE MAKE SURE TO UPDATE COMPLEXITY.MD *
